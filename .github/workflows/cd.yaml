@@ -1,0 +1,63 @@
+name: CD - Deploy to EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (dev, staging, prod)'
+        required: true
+        default: 'dev'
+      branch:
+        description: 'Branch to deploy'
+        required: true
+        default: 'main'
+      tag:
+        description: 'Docker image tag (SHA commit)'
+        required: true
+      reset_database:
+        type: boolean
+        description: 'Reset database (true/false)'
+        required: false
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsEKS
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: v1.29.0
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Patch image tag in Kustomize
+        run: |
+          sed -i "s/SHA_PLACEHOLDER/${{ inputs.tag }}/" manifests/overlays/${{ inputs.environment }}/kustomization.yaml
+
+      - name: Optional reset DB
+        if: inputs.reset_database == 'true'
+        run: |
+          echo "Resetting database for ${{ inputs.environment }}..."
+          # kubectl apply -f manifests/reset-db-job.yaml -n ${{ inputs.environment }}
+
+      - name: Apply Kustomize to EKS
+        run: |
+          kubectl apply -k manifests/overlays/${{ inputs.environment }}
